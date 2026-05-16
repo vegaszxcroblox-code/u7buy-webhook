@@ -11,6 +11,9 @@ const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
 const DISCORD_MENTION_USER_ID = process.env.DISCORD_MENTION_USER_ID || "";
+const U7BUY_ORDER_URL =
+  process.env.U7BUY_ORDER_URL ||
+  "https://www.u7buy.com/member/sold-order/details?orderId=";
 
 app.use(express.json());
 
@@ -31,7 +34,8 @@ async function notifyDiscord(data) {
   let message = "";
 
   if (data?.event === "new_order_received") {
-    message = `🛒 NEW ORDER\nOrder ID: ${data.data?.orderId}`;
+    const orderId = data.data?.orderId;
+    message = `🛒 NEW ORDER\n${U7BUY_ORDER_URL}${orderId}`;
   }
 
   if (!message) {
