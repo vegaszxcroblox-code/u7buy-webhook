@@ -46,7 +46,31 @@ const U7BUY_ORDER_URL =
   process.env.U7BUY_ORDER_URL ||
   "https://www.u7buy.com/member/sold-order/details?orderId=";
 
-app.use(express.json());
+/** U7BUY order IDs exceed JS safe integer — read digits from raw JSON before parse. */
+function extractOrderIdFromRaw(raw) {
+  const keys = ["orderId", "order_id", "orderNo", "order_no"];
+  for (const key of keys) {
+    const re = new RegExp(`"${key}"\\s*:\\s*"?([\\d]+)"?`, "i");
+    const match = raw.match(re);
+    if (match) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      const path = req.originalUrl || req.url || "";
+      if (!path.includes("/webhook")) {
+        return;
+      }
+      const raw = buf.toString("utf8");
+      req.preservedOrderId = extractOrderIdFromRaw(raw);
+    },
+  })
+);
 
 const okResponse = (res) => res.status(200).json({ status: "OK" });
 
@@ -57,23 +81,34 @@ function logWebhook(method, payload) {
   );
 }
 
-function extractOrderId(data) {
+function extractOrderId(data, req) {
+  if (req?.preservedOrderId) {
+    return req.preservedOrderId;
+  }
+
   const block = data?.data ?? data;
-  return block?.orderId ?? block?.order_id ?? data?.orderId ?? data?.order_id;
+  const parsed =
+    block?.orderId ?? block?.order_id ?? data?.orderId ?? data?.order_id;
+
+  if (parsed == null) {
+    return null;
+  }
+
+  return String(parsed);
 }
 
 function extractEvent(data) {
   return data?.event ?? data?.type ?? data?.eventType;
 }
 
-async function notifyDiscord(data, { skipDedupe = false } = {}) {
+async function notifyDiscord(data, { skipDedupe = false, req = null } = {}) {
   if (!DISCORD_WEBHOOK) {
     console.warn("[webhook] DISCORD_WEBHOOK not set — skipping Discord");
     return { sent: false, reason: "no_webhook" };
   }
 
   const event = extractEvent(data);
-  const orderId = extractOrderId(data);
+  const orderId = extractOrderId(data, req);
 
   if (event !== "new_order_received") {
     console.log(
@@ -96,7 +131,8 @@ async function notifyDiscord(data, { skipDedupe = false } = {}) {
     dedupeKey = dedupe.key;
   }
 
-  const message = `🛒 NEW ORDER\nOrder link: ${U7BUY_ORDER_URL}${orderId}`;
+  const orderIdStr = String(orderId);
+  const message = `🛒 NEW ORDER\nOrder ID: ${orderIdStr}\nOrder link: ${U7BUY_ORDER_URL}${orderIdStr}`;
   const payload = { content: message };
   const mentionUserId = getU7buyMentionUserId();
 
@@ -127,9 +163,19 @@ const webhookHandler = {
   },
   post: (req, res) => {
     logWebhook("POST", req.body);
+
+    if (req.preservedOrderId) {
+      const parsedId = extractOrderId(req.body);
+      if (parsedId && parsedId !== req.preservedOrderId) {
+        console.warn(
+          `[webhook] orderId precision corrected: parsed=${parsedId} → preserved=${req.preservedOrderId}`
+        );
+      }
+    }
+
     okResponse(res);
 
-    notifyDiscord(req.body).catch((err) => {
+    notifyDiscord(req.body, { req }).catch((err) => {
       console.error("[webhook] Discord notification failed:", err.message);
     });
   },
