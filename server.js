@@ -35,7 +35,7 @@ async function notifyDiscord(data) {
 
   if (data?.event === "new_order_received") {
     const orderId = data.data?.orderId;
-    message = `🛒 NEW ORDER\n${U7BUY_ORDER_URL}${orderId}`;
+    message = `🛒 NEW ORDER\nOrder link: ${U7BUY_ORDER_URL}${orderId}`;
   }
 
   if (!message) {
