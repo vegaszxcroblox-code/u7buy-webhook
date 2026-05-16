@@ -63,7 +63,7 @@ app.use(
   express.json({
     verify: (req, res, buf) => {
       const path = req.originalUrl || req.url || "";
-      if (!path.includes("/webhook")) {
+      if (!path.includes("/webhook") && !path.includes("/u7buy")) {
         return;
       }
       const raw = buf.toString("utf8");
@@ -186,6 +186,12 @@ app.get("/webhook/", webhookHandler.get);
 app.post("/webhook", webhookHandler.post);
 app.post("/webhook/", webhookHandler.post);
 
+// Alias — same handler (some setups use /u7buy by mistake)
+app.get("/u7buy", webhookHandler.get);
+app.get("/u7buy/", webhookHandler.get);
+app.post("/u7buy", webhookHandler.post);
+app.post("/u7buy/", webhookHandler.post);
+
 app.get("/", (req, res) => {
   res.send("Webhook running");
 });
@@ -260,7 +266,7 @@ app.use((req, res) => {
   res.status(404).json({
     error: "Not Found",
     path: req.path,
-    hint: "Use GET or POST /webhook",
+    hint: "Use GET or POST /webhook (or /u7buy)",
   });
 });
 
