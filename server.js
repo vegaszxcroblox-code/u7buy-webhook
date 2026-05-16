@@ -28,6 +28,7 @@ function logWebhook(method, payload) {
 
 async function notifyDiscord(data) {
   if (!DISCORD_WEBHOOK) {
+    console.warn("[webhook] DISCORD_WEBHOOK not set — skipping Discord");
     return;
   }
 
@@ -35,7 +36,16 @@ async function notifyDiscord(data) {
 
   if (data?.event === "new_order_received") {
     const orderId = data.data?.orderId;
+    if (orderId == null) {
+      console.warn("[webhook] new_order_received missing orderId:", data);
+      return;
+    }
     message = `🛒 NEW ORDER\nOrder link: ${U7BUY_ORDER_URL}${orderId}`;
+  } else {
+    console.log(
+      `[webhook] No Discord alert for event "${data?.event ?? "unknown"}"`
+    );
+    return;
   }
 
   if (!message) {
@@ -59,16 +69,15 @@ const webhookHandler = {
     logWebhook("GET", req.query);
     return okResponse(res);
   },
-  post: async (req, res) => {
+  post: (req, res) => {
     logWebhook("POST", req.body);
 
-    try {
-      await notifyDiscord(req.body);
-    } catch (err) {
-      console.error("[webhook] Discord notification failed:", err.message);
-    }
+    // Reply immediately so U7BUY gets OK within its 5s timeout (Render cold starts).
+    okResponse(res);
 
-    return okResponse(res);
+    notifyDiscord(req.body).catch((err) => {
+      console.error("[webhook] Discord notification failed:", err.message);
+    });
   },
 };
 
