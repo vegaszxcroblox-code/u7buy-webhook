@@ -6,34 +6,25 @@ const speakeasy = require("speakeasy");
 const API_BASE =
   process.env.GAMEFLIP_API_BASE ||
   "https://production-gameflip.fingershock.com/api/v1";
-const API_KEY = process.env.GAMEFLIP_API_KEY || process.env.GFAPI_KEY || "";
-const API_SECRET =
-  process.env.GAMEFLIP_TOTP_SECRET || process.env.GFAPI_SECRET || "";
 const POLL_MS = Number(process.env.GAMEFLIP_POLL_INTERVAL_MS || 60000);
-const MENTION_USER_ID = process.env.DISCORD_MENTION_USER_ID || "";
 const STATE_FILE = path.join(__dirname, "data", "gameflip-state.json");
 
 const seenIds = new Set();
 let channelWebhooks = {};
+let channelParseError = null;
 let pollTimer = null;
 let polling = false;
 
-function loadChannelWebhooks() {
-  const raw = process.env.GAMEFLIP_CHANNEL_WEBHOOKS || "{}";
-  try {
-    channelWebhooks = JSON.parse(raw);
-  } catch (err) {
-    console.error("[gameflip] Invalid GAMEFLIP_CHANNEL_WEBHOOKS JSON:", err.message);
-    channelWebhooks = {};
-  }
+function getApiKey() {
+  return process.env.GAMEFLIP_API_KEY || process.env.GFAPI_KEY || "";
+}
 
-  const normalized = {};
-  for (const [key, value] of Object.entries(channelWebhooks)) {
-    if (typeof value === "string" && value.trim()) {
-      normalized[slugCategory(key)] = value.trim();
-    }
-  }
-  channelWebhooks = normalized;
+function getApiSecret() {
+  return process.env.GAMEFLIP_TOTP_SECRET || process.env.GFAPI_SECRET || "";
+}
+
+function getMentionUserId() {
+  return process.env.DISCORD_MENTION_USER_ID || "";
 }
 
 function slugCategory(category) {
@@ -42,6 +33,70 @@ function slugCategory(category) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
+}
+
+function parseChannelWebhooksJson(raw) {
+  if (!raw || !raw.trim()) {
+    return {};
+  }
+
+  let text = raw.trim();
+
+  // Handle double-quoted JSON string pasted from some UIs
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    text = text.slice(1, -1);
+  }
+
+  const parsed = JSON.parse(text);
+  return parsed && typeof parsed === "object" ? parsed : {};
+}
+
+function loadChannelWebhooksFromPrefix() {
+  const prefix = "DISCORD_WEBHOOK_GAMEFLIP_";
+  const map = {};
+
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith(prefix) || !value?.trim()) {
+      continue;
+    }
+    const category = key.slice(prefix.length);
+    map[slugCategory(category)] = value.trim();
+  }
+
+  return map;
+}
+
+function loadChannelWebhooks() {
+  channelParseError = null;
+  const raw = process.env.GAMEFLIP_CHANNEL_WEBHOOKS || "";
+  let fromJson = {};
+
+  if (raw.trim()) {
+    try {
+      fromJson = parseChannelWebhooksJson(raw);
+    } catch (err) {
+      channelParseError = err.message;
+      console.error(
+        "[gameflip] Invalid GAMEFLIP_CHANNEL_WEBHOOKS JSON:",
+        err.message
+      );
+    }
+  }
+
+  const fromPrefix = loadChannelWebhooksFromPrefix();
+  const merged = { ...fromJson, ...fromPrefix };
+  const normalized = {};
+
+  for (const [key, value] of Object.entries(merged)) {
+    if (typeof value === "string" && value.trim()) {
+      normalized[slugCategory(key)] = value.trim();
+    }
+  }
+
+  channelWebhooks = normalized;
 }
 
 function loadState() {
@@ -72,11 +127,11 @@ function saveState() {
 
 function authHeader() {
   const totp = speakeasy.totp({
-    secret: API_SECRET,
+    secret: getApiSecret(),
     encoding: "base32",
     algorithm: "sha1",
   });
-  return `GFAPI ${API_KEY}:${totp}`;
+  return `GFAPI ${getApiKey()}:${totp}`;
 }
 
 function webhookForCategory(category) {
@@ -98,7 +153,7 @@ function formatPrice(cents) {
 
 function buildSaleMessage(exchange) {
   const category = exchange.category || "unknown";
-  const mention = MENTION_USER_ID ? `<@${MENTION_USER_ID}>` : "";
+  const mention = getMentionUserId() ? `<@${getMentionUserId()}>` : "";
   const lines = [
     "🛒 **NEW GAMEFLIP SALE**",
     `**Item:** ${exchange.name || "Unknown item"}`,
@@ -116,9 +171,10 @@ function buildSaleMessage(exchange) {
 }
 
 async function postDiscord(webhookUrl, content) {
+  const mentionUserId = getMentionUserId();
   const payload = { content };
-  if (MENTION_USER_ID) {
-    payload.allowed_mentions = { users: [MENTION_USER_ID] };
+  if (mentionUserId) {
+    payload.allowed_mentions = { users: [mentionUserId] };
   }
   await axios.post(webhookUrl, payload);
 }
@@ -158,7 +214,7 @@ async function notifyNewSale(exchange) {
 
   await postDiscord(webhookUrl, buildSaleMessage(exchange));
   console.log(
-    `[gameflip] Notified new sale: ${exchange.id} (${exchange.category}) → channel slug "${slugCategory(exchange.category)}"`
+    `[gameflip] Notified new sale: ${exchange.id} (${exchange.category}) → "${slugCategory(exchange.category)}"`
   );
 }
 
@@ -194,22 +250,62 @@ async function pollOnce() {
 }
 
 function isConfigured() {
-  return Boolean(API_KEY && API_SECRET && Object.keys(channelWebhooks).length);
+  return Boolean(
+    getApiKey() && getApiSecret() && Object.keys(channelWebhooks).length
+  );
 }
 
 function getStatus() {
+  loadChannelWebhooks();
+
+  const hasApiKey = Boolean(getApiKey());
+  const hasTotpSecret = Boolean(getApiSecret());
+  const hasChannelEnv = Boolean(process.env.GAMEFLIP_CHANNEL_WEBHOOKS?.trim());
+  const hasPrefixWebhooks = Object.keys(process.env).some((k) =>
+    k.startsWith("DISCORD_WEBHOOK_GAMEFLIP_")
+  );
+  const channelCount = Object.keys(channelWebhooks).length;
+
+  const hints = [];
+  if (!hasApiKey) {
+    hints.push("Set GAMEFLIP_API_KEY in Render Environment");
+  }
+  if (!hasTotpSecret) {
+    hints.push("Set GAMEFLIP_TOTP_SECRET in Render Environment");
+  }
+  if (!channelCount) {
+    hints.push(
+      "Set GAMEFLIP_CHANNEL_WEBHOOKS JSON or DISCORD_WEBHOOK_GAMEFLIP_DEFAULT (and others)"
+    );
+  }
+  if (channelParseError) {
+    hints.push(`Fix GAMEFLIP_CHANNEL_WEBHOOKS JSON: ${channelParseError}`);
+  }
+  if ((hasApiKey || hasTotpSecret || hasChannelEnv) && !isConfigured()) {
+    hints.push("After saving env vars, wait for Render redeploy (Live)");
+  }
+
   return {
     enabled: isConfigured(),
     pollIntervalMs: POLL_MS,
     categories: Object.keys(channelWebhooks),
     seenCount: seenIds.size,
+    checks: {
+      hasApiKey,
+      hasTotpSecret,
+      hasChannelWebhooksEnv: hasChannelEnv,
+      hasPrefixWebhooks,
+      channelCount,
+      channelParseError,
+    },
+    hints,
   };
 }
 
 function startGameflipPoller() {
   loadChannelWebhooks();
 
-  if (!API_KEY || !API_SECRET) {
+  if (!getApiKey() || !getApiSecret()) {
     console.log(
       "[gameflip] Poller disabled — set GAMEFLIP_API_KEY and GAMEFLIP_TOTP_SECRET"
     );
@@ -218,7 +314,7 @@ function startGameflipPoller() {
 
   if (!Object.keys(channelWebhooks).length) {
     console.log(
-      "[gameflip] Poller disabled — set GAMEFLIP_CHANNEL_WEBHOOKS (JSON map of category → webhook URL)"
+      "[gameflip] Poller disabled — set GAMEFLIP_CHANNEL_WEBHOOKS or DISCORD_WEBHOOK_GAMEFLIP_*"
     );
     return;
   }
