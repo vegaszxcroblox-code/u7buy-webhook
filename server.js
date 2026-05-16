@@ -32,8 +32,6 @@ async function notifyDiscord(data) {
 
   if (data?.event === "new_order_received") {
     message = `🛒 NEW ORDER\nOrder ID: ${data.data?.orderId}`;
-  } else if (data?.event === "order_completed") {
-    message = `✅ ORDER COMPLETED\nOrder ID: ${data.data?.orderId}`;
   }
 
   if (!message) {

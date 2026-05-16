@@ -9,8 +9,7 @@ const API_BASE =
 const POLL_MS = Number(process.env.GAMEFLIP_POLL_INTERVAL_MS || 60000);
 const STATE_FILE = path.join(__dirname, "data", "gameflip-state.json");
 
-/** @type {Record<string, { status: string, handling_status: string, notified: object }>} */
-const exchangeState = {};
+const seenIds = new Set();
 let channelWebhooks = {};
 let channelParseError = null;
 let pollTimer = null;
@@ -34,10 +33,6 @@ function slugCategory(category) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
-}
-
-function defaultNotified() {
-  return { sale: false, shipped: false, delivered: false, complete: false };
 }
 
 function parseChannelWebhooksJson(raw) {
@@ -110,24 +105,9 @@ function loadState() {
     }
     const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
 
-    if (data.exchangeState && typeof data.exchangeState === "object") {
-      for (const [id, entry] of Object.entries(data.exchangeState)) {
-        exchangeState[id] = {
-          status: entry.status || "",
-          handling_status: entry.handling_status || "",
-          notified: { ...defaultNotified(), ...entry.notified },
-        };
-      }
-      return;
-    }
-
-    // Migrate old seenIds-only state
-    for (const id of data.seenIds || []) {
-      exchangeState[id] = {
-        status: "",
-        handling_status: "",
-        notified: { ...defaultNotified(), sale: true },
-      };
+    const ids = data.seenIds || Object.keys(data.exchangeState || {});
+    for (const id of ids) {
+      seenIds.add(id);
     }
   } catch (err) {
     console.error("[gameflip] Could not load state:", err.message);
@@ -137,12 +117,9 @@ function loadState() {
 function saveState() {
   try {
     fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-    const entries = Object.entries(exchangeState);
-    const trimmed = entries.slice(-5000);
-    const exchangeStateToSave = Object.fromEntries(trimmed);
     fs.writeFileSync(
       STATE_FILE,
-      JSON.stringify({ exchangeState: exchangeStateToSave }, null, 2)
+      JSON.stringify({ seenIds: [...seenIds].slice(-5000) }, null, 2)
     );
   } catch (err) {
     console.error("[gameflip] Could not save state:", err.message);
@@ -175,54 +152,35 @@ function formatPrice(cents) {
   return `$${(Number(cents) / 100).toFixed(2)}`;
 }
 
-function exchangeDetails(exchange) {
-  return [
+function buildNewSaleMessage(exchange) {
+  const category = exchange.category || "unknown";
+  const mention = getMentionUserId() ? `<@${getMentionUserId()}>` : "";
+  const lines = [
+    "🛒 **NEW GAMEFLIP SALE**",
     `**Item:** ${exchange.name || "Unknown item"}`,
-    `**Type:** ${exchange.category || "unknown"}`,
+    `**Type:** ${category}`,
     `**Price:** ${formatPrice(exchange.price)}`,
     `**Exchange ID:** ${exchange.id}`,
-    `**Status:** ${exchange.status || "—"}`,
-    `**Handling:** ${exchange.handling_status || "—"}`,
-  ].join("\n");
-}
+    `**Status:** ${exchange.status || "pending"}`,
+  ];
 
-function buildNewSaleMessage(exchange) {
-  const mention = getMentionUserId() ? `<@${getMentionUserId()}>` : "";
-  const lines = ["🛒 **NEW GAMEFLIP SALE**", exchangeDetails(exchange)];
   if (mention) {
     lines.push(mention);
   }
+
   return lines.join("\n");
 }
 
-function buildShippedMessage(exchange) {
-  return ["📦 **GAMEFLIP ORDER SHIPPED**", exchangeDetails(exchange)].join(
-    "\n"
-  );
-}
-
-function buildDeliveredMessage(exchange) {
-  return ["✅ **GAMEFLIP ORDER DELIVERED**", exchangeDetails(exchange)].join(
-    "\n"
-  );
-}
-
-function buildCompletedMessage(exchange) {
-  return ["🏁 **GAMEFLIP ORDER COMPLETED**", exchangeDetails(exchange)].join(
-    "\n"
-  );
-}
-
-async function postDiscord(webhookUrl, content, { mention = false } = {}) {
+async function postDiscord(webhookUrl, content) {
+  const mentionUserId = getMentionUserId();
   const payload = { content };
-  const mentionUserId = mention ? getMentionUserId() : "";
   if (mentionUserId) {
     payload.allowed_mentions = { users: [mentionUserId] };
   }
   await axios.post(webhookUrl, payload);
 }
 
-async function sendExchangeNotification(exchange, message, options = {}) {
+async function notifyNewSale(exchange) {
   const webhookUrl = webhookForCategory(exchange.category);
   if (!webhookUrl) {
     console.warn(
@@ -230,17 +188,21 @@ async function sendExchangeNotification(exchange, message, options = {}) {
     );
     return;
   }
-  await postDiscord(webhookUrl, message, options);
+
+  await postDiscord(webhookUrl, buildNewSaleMessage(exchange));
+  console.log(
+    `[gameflip] New sale: ${exchange.id} (${exchange.category})`
+  );
 }
 
 async function fetchSellerExchanges() {
-  const lookbackDays = Number(process.env.GAMEFLIP_POLL_LOOKBACK_DAYS || 14);
-  const since = new Date(
-    Date.now() - lookbackDays * 24 * 60 * 60 * 1000
-  ).toISOString();
+  const bootstrapMinutes = Number(
+    process.env.GAMEFLIP_BOOTSTRAP_MINUTES || 10
+  );
+  const since = new Date(Date.now() - bootstrapMinutes * 60 * 1000).toISOString();
   const params = new URLSearchParams({
     role: "seller",
-    updated: `${since},any`,
+    created: `${since},any`,
   });
 
   const response = await axios.get(`${API_BASE}/exchange?${params}`, {
@@ -257,75 +219,6 @@ async function fetchSellerExchanges() {
   return response.data?.data?.exchanges || [];
 }
 
-function isShipped(exchange) {
-  return exchange.handling_status === "shipped";
-}
-
-function isDelivered(exchange) {
-  return exchange.status === "received";
-}
-
-function isComplete(exchange) {
-  return exchange.status === "complete";
-}
-
-function isNewSale(exchange) {
-  return exchange.status === "pending";
-}
-
-async function processExchangeUpdates(exchange) {
-  if (!exchange?.id) {
-    return;
-  }
-
-  const id = exchange.id;
-  const current = {
-    status: exchange.status || "",
-    handling_status: exchange.handling_status || "",
-  };
-
-  let state = exchangeState[id];
-
-  if (!state) {
-    state = {
-      ...current,
-      notified: defaultNotified(),
-    };
-    exchangeState[id] = state;
-  }
-
-  if (isNewSale(exchange) && !state.notified.sale) {
-    await sendExchangeNotification(
-      exchange,
-      buildNewSaleMessage(exchange),
-      { mention: true }
-    );
-    state.notified.sale = true;
-    console.log(`[gameflip] New sale: ${id}`);
-  }
-
-  if (isShipped(exchange) && !state.notified.shipped) {
-    await sendExchangeNotification(exchange, buildShippedMessage(exchange));
-    state.notified.shipped = true;
-    console.log(`[gameflip] Shipped: ${id}`);
-  }
-
-  if (isDelivered(exchange) && !state.notified.delivered) {
-    await sendExchangeNotification(exchange, buildDeliveredMessage(exchange));
-    state.notified.delivered = true;
-    console.log(`[gameflip] Delivered: ${id}`);
-  }
-
-  if (isComplete(exchange) && !state.notified.complete) {
-    await sendExchangeNotification(exchange, buildCompletedMessage(exchange));
-    state.notified.complete = true;
-    console.log(`[gameflip] Completed: ${id}`);
-  }
-
-  state.status = current.status;
-  state.handling_status = current.handling_status;
-}
-
 async function pollOnce() {
   if (polling) {
     return;
@@ -336,7 +229,17 @@ async function pollOnce() {
     const exchanges = await fetchSellerExchanges();
 
     for (const exchange of exchanges) {
-      await processExchangeUpdates(exchange);
+      if (!exchange?.id || seenIds.has(exchange.id)) {
+        continue;
+      }
+
+      seenIds.add(exchange.id);
+
+      if (exchange.status !== "pending") {
+        continue;
+      }
+
+      await notifyNewSale(exchange);
     }
 
     saveState();
@@ -386,9 +289,8 @@ function getStatus() {
   return {
     enabled: isConfigured(),
     pollIntervalMs: POLL_MS,
-    lookbackDays: Number(process.env.GAMEFLIP_POLL_LOOKBACK_DAYS || 14),
     categories: Object.keys(channelWebhooks),
-    trackedExchanges: Object.keys(exchangeState).length,
+    seenCount: seenIds.size,
     checks: {
       hasApiKey,
       hasTotpSecret,
@@ -445,14 +347,9 @@ async function sendTestNotification() {
     category: "default",
     price: 1999,
     status: "pending",
-    handling_status: "need_label",
   };
 
-  await sendExchangeNotification(
-    testExchange,
-    buildNewSaleMessage(testExchange),
-    { mention: true }
-  );
+  await notifyNewSale(testExchange);
   return testExchange;
 }
 
