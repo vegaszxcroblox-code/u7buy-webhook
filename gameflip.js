@@ -333,8 +333,28 @@ function stopGameflipPoller() {
   }
 }
 
+async function sendTestNotification() {
+  loadChannelWebhooks();
+
+  if (!isConfigured()) {
+    throw new Error("Gameflip notifier is not configured");
+  }
+
+  const testExchange = {
+    id: `test-${Date.now()}`,
+    name: "Test Item (not a real sale)",
+    category: "default",
+    price: 1999,
+    status: "pending",
+  };
+
+  await notifyNewSale(testExchange);
+  return testExchange;
+}
+
 module.exports = {
   startGameflipPoller,
   stopGameflipPoller,
   getGameflipStatus: getStatus,
+  sendTestNotification,
 };

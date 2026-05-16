@@ -1,6 +1,10 @@
 const express = require("express");
 const axios = require("axios");
-const { startGameflipPoller, getGameflipStatus } = require("./gameflip");
+const {
+  startGameflipPoller,
+  getGameflipStatus,
+  sendTestNotification,
+} = require("./gameflip");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -67,6 +71,54 @@ app.get("/", (req, res) => {
 
 app.get("/gameflip/status", (req, res) => {
   res.status(200).json(getGameflipStatus());
+});
+
+app.post("/gameflip/test", async (req, res) => {
+  try {
+    const exchange = await sendTestNotification();
+    return res.status(200).json({
+      status: "OK",
+      message: "Gameflip test notification sent to Discord",
+      exchange,
+    });
+  } catch (err) {
+    console.error("[gameflip] Test failed:", err.message);
+    return res.status(500).json({ status: "ERROR", message: err.message });
+  }
+});
+
+app.post("/webhook/test", async (req, res) => {
+  const event = req.body?.event || "new_order_received";
+  const orderId = req.body?.orderId || Date.now();
+
+  const payload = {
+    event,
+    data: { orderId },
+  };
+
+  logWebhook("POST", payload);
+
+  try {
+    if (!DISCORD_WEBHOOK) {
+      return res.status(200).json({
+        status: "OK",
+        discord: false,
+        message: "Webhook OK but DISCORD_WEBHOOK is not set on Render",
+        payload,
+      });
+    }
+
+    await notifyDiscord(payload);
+    return res.status(200).json({
+      status: "OK",
+      discord: true,
+      message: `U7BUY test notification sent (${event})`,
+      payload,
+    });
+  } catch (err) {
+    console.error("[webhook] Test failed:", err.message);
+    return res.status(500).json({ status: "ERROR", message: err.message });
+  }
 });
 
 app.use((req, res) => {
