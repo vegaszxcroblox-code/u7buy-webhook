@@ -17,6 +17,15 @@ const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
 
+const webhookDiagnostics = {
+  lastPostAt: null,
+  lastPostEvent: null,
+  lastPostOrderId: null,
+  lastDiscordSentAt: null,
+  lastDiscordError: null,
+  postCount: 0,
+};
+
 function sanitizeMentionUserId(raw) {
   if (raw == null || raw === "") {
     return "";
@@ -164,6 +173,11 @@ const webhookHandler = {
   post: (req, res) => {
     logWebhook("POST", req.body);
 
+    webhookDiagnostics.postCount += 1;
+    webhookDiagnostics.lastPostAt = new Date().toISOString();
+    webhookDiagnostics.lastPostEvent = extractEvent(req.body);
+    webhookDiagnostics.lastPostOrderId = extractOrderId(req.body, req);
+
     if (req.preservedOrderId) {
       const parsedId = extractOrderId(req.body);
       if (parsedId && parsedId !== req.preservedOrderId) {
@@ -175,9 +189,19 @@ const webhookHandler = {
 
     okResponse(res);
 
-    notifyDiscord(req.body, { req }).catch((err) => {
-      console.error("[webhook] Discord notification failed:", err.message);
-    });
+    notifyDiscord(req.body, { req })
+      .then((result) => {
+        if (result.sent) {
+          webhookDiagnostics.lastDiscordSentAt = new Date().toISOString();
+          webhookDiagnostics.lastDiscordError = null;
+        } else {
+          webhookDiagnostics.lastDiscordError = result.reason || "not_sent";
+        }
+      })
+      .catch((err) => {
+        webhookDiagnostics.lastDiscordError = err.message;
+        console.error("[webhook] Discord notification failed:", err.message);
+      });
   },
 };
 
@@ -206,6 +230,9 @@ app.get("/webhook/status", (req, res) => {
         ? "DISCORD_MENTION_USER_ID"
         : null,
     dedupe: getStats(),
+    lastWebhook: webhookDiagnostics,
+    hint:
+      "If lastWebhook.lastPostAt is null after a real order, U7BUY is not calling this server.",
   });
 });
 
