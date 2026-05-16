@@ -10,7 +10,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
-const DISCORD_MENTION_USER_ID = process.env.DISCORD_MENTION_USER_ID || "";
+function getU7buyMentionUserId() {
+  return (
+    process.env.DISCORD_MENTION_USER_ID_U7BUY ||
+    process.env.DISCORD_MENTION_USER_ID ||
+    ""
+  );
+}
 const U7BUY_ORDER_URL =
   process.env.U7BUY_ORDER_URL ||
   "https://www.u7buy.com/member/sold-order/details?orderId=";
@@ -53,12 +59,11 @@ async function notifyDiscord(data) {
   }
 
   const payload = { content: message };
-  const mentionOnNewOrder =
-    data?.event === "new_order_received" && DISCORD_MENTION_USER_ID;
+  const mentionUserId = getU7buyMentionUserId();
 
-  if (mentionOnNewOrder) {
-    payload.content += `\n<@${DISCORD_MENTION_USER_ID}>`;
-    payload.allowed_mentions = { users: [DISCORD_MENTION_USER_ID] };
+  if (data?.event === "new_order_received" && mentionUserId) {
+    payload.content += `\n<@${mentionUserId}>`;
+    payload.allowed_mentions = { users: [mentionUserId] };
   }
 
   await axios.post(DISCORD_WEBHOOK, payload);

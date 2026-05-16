@@ -13,5 +13,7 @@ services:
         sync: false
       - key: GAMEFLIP_CHANNEL_WEBHOOKS
         sync: false
-      - key: DISCORD_MENTION_USER_ID
+      - key: DISCORD_MENTION_USER_ID_U7BUY
+        sync: false
+      - key: DISCORD_MENTION_USER_ID_GAMEFLIP
         sync: false

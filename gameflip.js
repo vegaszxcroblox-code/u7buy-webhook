@@ -24,7 +24,11 @@ function getApiSecret() {
 }
 
 function getMentionUserId() {
-  return process.env.DISCORD_MENTION_USER_ID || "";
+  return (
+    process.env.DISCORD_MENTION_USER_ID_GAMEFLIP ||
+    process.env.DISCORD_MENTION_USER_ID ||
+    ""
+  );
 }
 
 function slugCategory(category) {
