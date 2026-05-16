@@ -3,6 +3,7 @@ const path = require("path");
 
 const STATE_FILE = path.join(__dirname, "data", "u7buy-state.json");
 const notifiedKeys = new Set();
+const inFlightKeys = new Set();
 
 function loadState() {
   try {
@@ -34,26 +35,57 @@ function dedupeKey(event, orderId) {
   return `${event}:${String(orderId)}`;
 }
 
-/**
- * Returns true if this notification should be sent (first time for this order).
- * Returns false if duplicate (U7BUY retry or repeat POST).
- */
-function claimNotification(event, orderId) {
+function beginNotification(event, orderId) {
   if (event !== "new_order_received" || orderId == null) {
-    return true;
+    return { proceed: true, key: null };
   }
 
   const key = dedupeKey(event, orderId);
+
   if (notifiedKeys.has(key)) {
     console.log(`[webhook] Duplicate skipped (already notified): ${key}`);
-    return false;
+    return { proceed: false, key, reason: "already_notified" };
   }
 
+  if (inFlightKeys.has(key)) {
+    console.log(`[webhook] Duplicate skipped (in progress): ${key}`);
+    return { proceed: false, key, reason: "in_flight" };
+  }
+
+  inFlightKeys.add(key);
+  return { proceed: true, key };
+}
+
+function completeNotification(key) {
+  if (!key) {
+    return;
+  }
   notifiedKeys.add(key);
+  inFlightKeys.delete(key);
   saveState();
-  return true;
+}
+
+function failNotification(key) {
+  if (!key) {
+    return;
+  }
+  inFlightKeys.delete(key);
+  console.log(`[webhook] Will allow retry for: ${key}`);
+}
+
+function getStats() {
+  return {
+    notifiedCount: notifiedKeys.size,
+    inFlightCount: inFlightKeys.size,
+  };
 }
 
 loadState();
 
-module.exports = { claimNotification, loadState };
+module.exports = {
+  beginNotification,
+  completeNotification,
+  failNotification,
+  getStats,
+  loadState,
+};

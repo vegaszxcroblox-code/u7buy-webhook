@@ -1,6 +1,11 @@
 const express = require("express");
 const axios = require("axios");
-const { claimNotification } = require("./u7buy-dedupe");
+const {
+  beginNotification,
+  completeNotification,
+  failNotification,
+  getStats,
+} = require("./u7buy-dedupe");
 const {
   startGameflipPoller,
   getGameflipStatus,
@@ -11,6 +16,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
+
 function sanitizeMentionUserId(raw) {
   if (raw == null || raw === "") {
     return "";
@@ -35,6 +41,7 @@ function getU7buyMentionUserId() {
 
   return sanitizeMentionUserId(process.env.DISCORD_MENTION_USER_ID);
 }
+
 const U7BUY_ORDER_URL =
   process.env.U7BUY_ORDER_URL ||
   "https://www.u7buy.com/member/sold-order/details?orderId=";
@@ -50,44 +57,67 @@ function logWebhook(method, payload) {
   );
 }
 
-async function notifyDiscord(data) {
+function extractOrderId(data) {
+  const block = data?.data ?? data;
+  return block?.orderId ?? block?.order_id ?? data?.orderId ?? data?.order_id;
+}
+
+function extractEvent(data) {
+  return data?.event ?? data?.type ?? data?.eventType;
+}
+
+async function notifyDiscord(data, { skipDedupe = false } = {}) {
   if (!DISCORD_WEBHOOK) {
     console.warn("[webhook] DISCORD_WEBHOOK not set — skipping Discord");
-    return;
+    return { sent: false, reason: "no_webhook" };
   }
 
-  let message = "";
+  const event = extractEvent(data);
+  const orderId = extractOrderId(data);
 
-  if (data?.event === "new_order_received") {
-    const orderId = data.data?.orderId;
-    if (orderId == null) {
-      console.warn("[webhook] new_order_received missing orderId:", data);
-      return;
-    }
-    if (!claimNotification(data.event, orderId)) {
-      return;
-    }
-    message = `🛒 NEW ORDER\nOrder link: ${U7BUY_ORDER_URL}${orderId}`;
-  } else {
+  if (event !== "new_order_received") {
     console.log(
-      `[webhook] No Discord alert for event "${data?.event ?? "unknown"}"`
+      `[webhook] No Discord alert for event "${event ?? "unknown"}"`
     );
-    return;
+    return { sent: false, reason: "ignored_event", event };
   }
 
-  if (!message) {
-    return;
+  if (orderId == null) {
+    console.warn("[webhook] new_order_received missing orderId:", data);
+    return { sent: false, reason: "missing_order_id" };
   }
 
+  let dedupeKey = null;
+  if (!skipDedupe) {
+    const dedupe = beginNotification(event, orderId);
+    if (!dedupe.proceed) {
+      return { sent: false, reason: dedupe.reason, orderId };
+    }
+    dedupeKey = dedupe.key;
+  }
+
+  const message = `🛒 NEW ORDER\nOrder link: ${U7BUY_ORDER_URL}${orderId}`;
   const payload = { content: message };
   const mentionUserId = getU7buyMentionUserId();
 
-  if (data?.event === "new_order_received" && mentionUserId) {
+  if (mentionUserId) {
     payload.content += `\n<@${mentionUserId}>`;
     payload.allowed_mentions = { parse: [], users: [mentionUserId] };
   }
 
-  await axios.post(DISCORD_WEBHOOK, payload);
+  try {
+    await axios.post(DISCORD_WEBHOOK, payload, { timeout: 15000 });
+    if (dedupeKey) {
+      completeNotification(dedupeKey);
+    }
+    console.log(`[webhook] Discord sent for order ${orderId}`);
+    return { sent: true, orderId };
+  } catch (err) {
+    if (dedupeKey) {
+      failNotification(dedupeKey);
+    }
+    throw err;
+  }
 }
 
 const webhookHandler = {
@@ -97,8 +127,6 @@ const webhookHandler = {
   },
   post: (req, res) => {
     logWebhook("POST", req.body);
-
-    // Reply immediately so U7BUY gets OK within its 5s timeout (Render cold starts).
     okResponse(res);
 
     notifyDiscord(req.body).catch((err) => {
@@ -114,6 +142,19 @@ app.post("/webhook/", webhookHandler.post);
 
 app.get("/", (req, res) => {
   res.send("Webhook running");
+});
+
+app.get("/webhook/status", (req, res) => {
+  res.status(200).json({
+    discordWebhookConfigured: Boolean(DISCORD_WEBHOOK),
+    mentionConfigured: Boolean(getU7buyMentionUserId()),
+    mentionSource: process.env.DISCORD_MENTION_USER_ID_U7BUY
+      ? "DISCORD_MENTION_USER_ID_U7BUY"
+      : process.env.DISCORD_MENTION_USER_ID
+        ? "DISCORD_MENTION_USER_ID"
+        : null,
+    dedupe: getStats(),
+  });
 });
 
 app.get("/gameflip/status", (req, res) => {
@@ -136,7 +177,7 @@ app.post("/gameflip/test", async (req, res) => {
 
 app.post("/webhook/test", async (req, res) => {
   const event = req.body?.event || "new_order_received";
-  const orderId = req.body?.orderId || Date.now();
+  const orderId = req.body?.orderId ?? Date.now();
 
   const payload = {
     event,
@@ -155,12 +196,13 @@ app.post("/webhook/test", async (req, res) => {
       });
     }
 
-    await notifyDiscord(payload);
+    const result = await notifyDiscord(payload, { skipDedupe: true });
     return res.status(200).json({
       status: "OK",
-      discord: true,
+      discord: result.sent,
       message: `U7BUY test notification sent (${event})`,
       payload,
+      result,
     });
   } catch (err) {
     console.error("[webhook] Test failed:", err.message);
