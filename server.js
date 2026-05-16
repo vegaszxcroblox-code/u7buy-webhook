@@ -10,6 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
+const DISCORD_MENTION_USER_ID = process.env.DISCORD_MENTION_USER_ID || "";
 
 app.use(express.json());
 
@@ -39,7 +40,16 @@ async function notifyDiscord(data) {
     return;
   }
 
-  await axios.post(DISCORD_WEBHOOK, { content: message });
+  if (DISCORD_MENTION_USER_ID) {
+    message += `\n<@${DISCORD_MENTION_USER_ID}>`;
+  }
+
+  const payload = { content: message };
+  if (DISCORD_MENTION_USER_ID) {
+    payload.allowed_mentions = { users: [DISCORD_MENTION_USER_ID] };
+  }
+
+  await axios.post(DISCORD_WEBHOOK, payload);
 }
 
 const webhookHandler = {
