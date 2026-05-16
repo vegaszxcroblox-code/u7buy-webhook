@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const { claimNotification } = require("./u7buy-dedupe");
 const {
   startGameflipPoller,
   getGameflipStatus,
@@ -61,6 +62,9 @@ async function notifyDiscord(data) {
     const orderId = data.data?.orderId;
     if (orderId == null) {
       console.warn("[webhook] new_order_received missing orderId:", data);
+      return;
+    }
+    if (!claimNotification(data.event, orderId)) {
       return;
     }
     message = `🛒 NEW ORDER\nOrder link: ${U7BUY_ORDER_URL}${orderId}`;

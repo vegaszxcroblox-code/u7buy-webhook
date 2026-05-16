@@ -10,6 +10,7 @@ const POLL_MS = Number(process.env.GAMEFLIP_POLL_INTERVAL_MS || 60000);
 const STATE_FILE = path.join(__dirname, "data", "gameflip-state.json");
 
 const seenIds = new Set();
+const notifyingIds = new Set();
 let channelWebhooks = {};
 let channelParseError = null;
 let pollTimer = null;
@@ -269,16 +270,28 @@ async function pollOnce() {
         continue;
       }
 
-      seenIds.add(exchange.id);
-
       if (exchange.status !== "pending") {
         continue;
       }
 
-      await notifyNewSale(exchange);
-    }
+      if (notifyingIds.has(exchange.id)) {
+        continue;
+      }
 
-    saveState();
+      notifyingIds.add(exchange.id);
+      try {
+        await notifyNewSale(exchange);
+        seenIds.add(exchange.id);
+        saveState();
+      } catch (err) {
+        console.error(
+          `[gameflip] Notify failed for ${exchange.id}:`,
+          err.message
+        );
+      } finally {
+        notifyingIds.delete(exchange.id);
+      }
+    }
   } catch (err) {
     console.error("[gameflip] Poll failed:", err.message);
   } finally {
