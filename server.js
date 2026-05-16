@@ -40,12 +40,12 @@ async function notifyDiscord(data) {
     return;
   }
 
-  if (DISCORD_MENTION_USER_ID) {
-    message += `\n<@${DISCORD_MENTION_USER_ID}>`;
-  }
-
   const payload = { content: message };
-  if (DISCORD_MENTION_USER_ID) {
+  const mentionOnNewOrder =
+    data?.event === "new_order_received" && DISCORD_MENTION_USER_ID;
+
+  if (mentionOnNewOrder) {
+    payload.content += `\n<@${DISCORD_MENTION_USER_ID}>`;
     payload.allowed_mentions = { users: [DISCORD_MENTION_USER_ID] };
   }
 
