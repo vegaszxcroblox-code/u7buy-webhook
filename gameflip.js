@@ -23,12 +23,39 @@ function getApiSecret() {
   return process.env.GAMEFLIP_TOTP_SECRET || process.env.GFAPI_SECRET || "";
 }
 
+function sanitizeMentionUserId(raw) {
+  if (raw == null || raw === "") {
+    return "";
+  }
+
+  let id = String(raw).trim().replace(/^["']|["']$/g, "");
+  const mentionMatch = id.match(/^<@!?(\d+)>$/);
+  if (mentionMatch) {
+    id = mentionMatch[1];
+  }
+
+  return /^\d{17,20}$/.test(id) ? id : "";
+}
+
 function getMentionUserId() {
-  return (
-    process.env.DISCORD_MENTION_USER_ID_GAMEFLIP ||
-    process.env.DISCORD_MENTION_USER_ID ||
-    ""
+  const fromGameflip = sanitizeMentionUserId(
+    process.env.DISCORD_MENTION_USER_ID_GAMEFLIP
   );
+  if (fromGameflip) {
+    return fromGameflip;
+  }
+
+  return sanitizeMentionUserId(process.env.DISCORD_MENTION_USER_ID);
+}
+
+function getMentionSource() {
+  if (sanitizeMentionUserId(process.env.DISCORD_MENTION_USER_ID_GAMEFLIP)) {
+    return "DISCORD_MENTION_USER_ID_GAMEFLIP";
+  }
+  if (sanitizeMentionUserId(process.env.DISCORD_MENTION_USER_ID)) {
+    return "DISCORD_MENTION_USER_ID";
+  }
+  return null;
 }
 
 function slugCategory(category) {
@@ -158,7 +185,8 @@ function formatPrice(cents) {
 
 function buildNewSaleMessage(exchange) {
   const category = exchange.category || "unknown";
-  const mention = getMentionUserId() ? `<@${getMentionUserId()}>` : "";
+  const mentionUserId = getMentionUserId();
+  const mention = mentionUserId ? `<@${mentionUserId}>` : "";
   const lines = [
     "🛒 **NEW GAMEFLIP SALE**",
     `**Item:** ${exchange.name || "Unknown item"}`,
@@ -172,15 +200,17 @@ function buildNewSaleMessage(exchange) {
     lines.push(mention);
   }
 
-  return lines.join("\n");
+  return { text: lines.join("\n"), mentionUserId };
 }
 
-async function postDiscord(webhookUrl, content) {
-  const mentionUserId = getMentionUserId();
+async function postDiscord(webhookUrl, content, mentionUserId = null) {
+  const userId = mentionUserId || getMentionUserId();
   const payload = { content };
-  if (mentionUserId) {
-    payload.allowed_mentions = { users: [mentionUserId] };
+
+  if (userId) {
+    payload.allowed_mentions = { parse: [], users: [userId] };
   }
+
   await axios.post(webhookUrl, payload);
 }
 
@@ -193,9 +223,11 @@ async function notifyNewSale(exchange) {
     return;
   }
 
-  await postDiscord(webhookUrl, buildNewSaleMessage(exchange));
+  const { text, mentionUserId } = buildNewSaleMessage(exchange);
+  await postDiscord(webhookUrl, text, mentionUserId);
   console.log(
-    `[gameflip] New sale: ${exchange.id} (${exchange.category})`
+    `[gameflip] New sale: ${exchange.id} (${exchange.category})` +
+      (mentionUserId ? ` mention=${mentionUserId}` : " (no mention id)")
   );
 }
 
@@ -270,6 +302,8 @@ function getStatus() {
     k.startsWith("DISCORD_WEBHOOK_GAMEFLIP_")
   );
   const channelCount = Object.keys(channelWebhooks).length;
+  const mentionUserId = getMentionUserId();
+  const mentionSource = getMentionSource();
 
   const hints = [];
   if (!hasApiKey) {
@@ -289,12 +323,21 @@ function getStatus() {
   if ((hasApiKey || hasTotpSecret || hasChannelEnv) && !isConfigured()) {
     hints.push("After saving env vars, wait for Render redeploy (Live)");
   }
+  if (isConfigured() && !mentionUserId) {
+    hints.push(
+      "Set DISCORD_MENTION_USER_ID_GAMEFLIP to a numeric Discord user ID"
+    );
+  }
 
   return {
     enabled: isConfigured(),
     pollIntervalMs: POLL_MS,
     categories: Object.keys(channelWebhooks),
     seenCount: seenIds.size,
+    mention: {
+      configured: Boolean(mentionUserId),
+      source: mentionSource,
+    },
     checks: {
       hasApiKey,
       hasTotpSecret,
@@ -302,6 +345,7 @@ function getStatus() {
       hasPrefixWebhooks,
       channelCount,
       channelParseError,
+      hasGameflipMentionUserId: Boolean(mentionUserId),
     },
     hints,
   };
@@ -354,7 +398,11 @@ async function sendTestNotification() {
   };
 
   await notifyNewSale(testExchange);
-  return testExchange;
+  return {
+    exchange: testExchange,
+    mentionConfigured: Boolean(getMentionUserId()),
+    mentionSource: getMentionSource(),
+  };
 }
 
 module.exports = {

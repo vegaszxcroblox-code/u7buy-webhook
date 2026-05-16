@@ -10,12 +10,29 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
+function sanitizeMentionUserId(raw) {
+  if (raw == null || raw === "") {
+    return "";
+  }
+
+  let id = String(raw).trim().replace(/^["']|["']$/g, "");
+  const mentionMatch = id.match(/^<@!?(\d+)>$/);
+  if (mentionMatch) {
+    id = mentionMatch[1];
+  }
+
+  return /^\d{17,20}$/.test(id) ? id : "";
+}
+
 function getU7buyMentionUserId() {
-  return (
-    process.env.DISCORD_MENTION_USER_ID_U7BUY ||
-    process.env.DISCORD_MENTION_USER_ID ||
-    ""
+  const fromU7buy = sanitizeMentionUserId(
+    process.env.DISCORD_MENTION_USER_ID_U7BUY
   );
+  if (fromU7buy) {
+    return fromU7buy;
+  }
+
+  return sanitizeMentionUserId(process.env.DISCORD_MENTION_USER_ID);
 }
 const U7BUY_ORDER_URL =
   process.env.U7BUY_ORDER_URL ||
@@ -63,7 +80,7 @@ async function notifyDiscord(data) {
 
   if (data?.event === "new_order_received" && mentionUserId) {
     payload.content += `\n<@${mentionUserId}>`;
-    payload.allowed_mentions = { users: [mentionUserId] };
+    payload.allowed_mentions = { parse: [], users: [mentionUserId] };
   }
 
   await axios.post(DISCORD_WEBHOOK, payload);
@@ -101,11 +118,11 @@ app.get("/gameflip/status", (req, res) => {
 
 app.post("/gameflip/test", async (req, res) => {
   try {
-    const exchange = await sendTestNotification();
+    const result = await sendTestNotification();
     return res.status(200).json({
       status: "OK",
       message: "Gameflip test notification sent to Discord",
-      exchange,
+      ...result,
     });
   } catch (err) {
     console.error("[gameflip] Test failed:", err.message);
