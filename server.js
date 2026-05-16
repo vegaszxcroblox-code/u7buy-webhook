@@ -3,6 +3,7 @@ const axios = require("axios");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
 
 app.use(express.json());
@@ -36,27 +37,41 @@ async function notifyDiscord(data) {
   await axios.post(DISCORD_WEBHOOK, { content: message });
 }
 
-app.get("/webhook", (req, res) => {
-  logWebhook("GET", req.query);
-  return okResponse(res);
-});
+const webhookHandler = {
+  get: (req, res) => {
+    logWebhook("GET", req.query);
+    return okResponse(res);
+  },
+  post: async (req, res) => {
+    logWebhook("POST", req.body);
 
-app.post("/webhook", async (req, res) => {
-  logWebhook("POST", req.body);
+    try {
+      await notifyDiscord(req.body);
+    } catch (err) {
+      console.error("[webhook] Discord notification failed:", err.message);
+    }
 
-  try {
-    await notifyDiscord(req.body);
-  } catch (err) {
-    console.error("[webhook] Discord notification failed:", err.message);
-  }
+    return okResponse(res);
+  },
+};
 
-  return okResponse(res);
-});
+app.get("/webhook", webhookHandler.get);
+app.get("/webhook/", webhookHandler.get);
+app.post("/webhook", webhookHandler.post);
+app.post("/webhook/", webhookHandler.post);
 
 app.get("/", (req, res) => {
   res.send("Webhook running");
 });
 
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+app.use((req, res) => {
+  res.status(404).json({
+    error: "Not Found",
+    path: req.path,
+    hint: "Use GET or POST /webhook",
+  });
+});
+
+app.listen(PORT, HOST, () => {
+  console.log(`Server listening on http://${HOST}:${PORT}`);
 });

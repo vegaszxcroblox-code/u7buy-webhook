@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: u7buy-webhook
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DISCORD_WEBHOOK
+        sync: false
