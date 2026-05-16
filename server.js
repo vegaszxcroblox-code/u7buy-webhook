@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const { startGameflipPoller, getGameflipStatus } = require("./gameflip");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -64,6 +65,10 @@ app.get("/", (req, res) => {
   res.send("Webhook running");
 });
 
+app.get("/gameflip/status", (req, res) => {
+  res.status(200).json(getGameflipStatus());
+});
+
 app.use((req, res) => {
   res.status(404).json({
     error: "Not Found",
@@ -74,4 +79,5 @@ app.use((req, res) => {
 
 app.listen(PORT, HOST, () => {
   console.log(`Server listening on http://${HOST}:${PORT}`);
+  startGameflipPoller();
 });

@@ -7,3 +7,11 @@ services:
     envVars:
       - key: DISCORD_WEBHOOK
         sync: false
+      - key: GAMEFLIP_API_KEY
+        sync: false
+      - key: GAMEFLIP_TOTP_SECRET
+        sync: false
+      - key: GAMEFLIP_CHANNEL_WEBHOOKS
+        sync: false
+      - key: DISCORD_MENTION_USER_ID
+        sync: false
