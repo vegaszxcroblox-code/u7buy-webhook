@@ -7,6 +7,11 @@ const {
   getStats,
 } = require("./u7buy-dedupe");
 const {
+  recordWebhookPost,
+  recordDiscordResult,
+  getDiagnostics,
+} = require("./u7buy-diagnostics");
+const {
   startGameflipPoller,
   getGameflipStatus,
   sendTestNotification,
@@ -16,15 +21,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
-
-const webhookDiagnostics = {
-  lastPostAt: null,
-  lastPostEvent: null,
-  lastPostOrderId: null,
-  lastDiscordSentAt: null,
-  lastDiscordError: null,
-  postCount: 0,
-};
 
 function sanitizeMentionUserId(raw) {
   if (raw == null || raw === "") {
@@ -76,10 +72,13 @@ app.use(
         return;
       }
       const raw = buf.toString("utf8");
+      req.rawBody = raw;
       req.preservedOrderId = extractOrderIdFromRaw(raw);
     },
   })
 );
+
+app.use(express.urlencoded({ extended: true }));
 
 const okResponse = (res) => res.status(200).json({ status: "OK" });
 
@@ -108,6 +107,54 @@ function extractOrderId(data, req) {
 
 function extractEvent(data) {
   return data?.event ?? data?.type ?? data?.eventType;
+}
+
+function normalizeWebhookBody(body, raw = "") {
+  let parsed = body;
+
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      parsed = {};
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = {};
+      }
+    } else {
+      parsed = {};
+    }
+  }
+
+  for (const key of ["payload", "body"]) {
+    if (typeof parsed[key] === "string") {
+      try {
+        const inner = JSON.parse(parsed[key]);
+        if (inner && typeof inner === "object") {
+          parsed = inner;
+          break;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  if (parsed.data && typeof parsed.data === "string") {
+    try {
+      parsed = { ...parsed, data: JSON.parse(parsed.data) };
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return parsed;
 }
 
 async function notifyDiscord(data, { skipDedupe = false, req = null } = {}) {
@@ -171,15 +218,12 @@ const webhookHandler = {
     return okResponse(res);
   },
   post: (req, res) => {
-    logWebhook("POST", req.body);
-
-    webhookDiagnostics.postCount += 1;
-    webhookDiagnostics.lastPostAt = new Date().toISOString();
-    webhookDiagnostics.lastPostEvent = extractEvent(req.body);
-    webhookDiagnostics.lastPostOrderId = extractOrderId(req.body, req);
+    const body = normalizeWebhookBody(req.body, req.rawBody || "");
+    logWebhook("POST", body);
+    recordWebhookPost(req, body);
 
     if (req.preservedOrderId) {
-      const parsedId = extractOrderId(req.body);
+      const parsedId = extractOrderId(body);
       if (parsedId && parsedId !== req.preservedOrderId) {
         console.warn(
           `[webhook] orderId precision corrected: parsed=${parsedId} → preserved=${req.preservedOrderId}`
@@ -189,17 +233,12 @@ const webhookHandler = {
 
     okResponse(res);
 
-    notifyDiscord(req.body, { req })
+    notifyDiscord(body, { req })
       .then((result) => {
-        if (result.sent) {
-          webhookDiagnostics.lastDiscordSentAt = new Date().toISOString();
-          webhookDiagnostics.lastDiscordError = null;
-        } else {
-          webhookDiagnostics.lastDiscordError = result.reason || "not_sent";
-        }
+        recordDiscordResult(result);
       })
       .catch((err) => {
-        webhookDiagnostics.lastDiscordError = err.message;
+        recordDiscordResult(null, err.message);
         console.error("[webhook] Discord notification failed:", err.message);
       });
   },
@@ -230,7 +269,7 @@ app.get("/webhook/status", (req, res) => {
         ? "DISCORD_MENTION_USER_ID"
         : null,
     dedupe: getStats(),
-    lastWebhook: webhookDiagnostics,
+    lastWebhook: getDiagnostics(),
     hint:
       "If lastWebhook.lastPostAt is null after a real order, U7BUY is not calling this server.",
   });
@@ -295,6 +334,31 @@ app.use((req, res) => {
     path: req.path,
     hint: "Use GET or POST /webhook (or /u7buy)",
   });
+});
+
+function isU7buyWebhookPath(path) {
+  return (
+    path === "/webhook" ||
+    path === "/webhook/" ||
+    path === "/u7buy" ||
+    path === "/u7buy/"
+  );
+}
+
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+    if (isU7buyWebhookPath(req.path)) {
+      console.error(
+        "[webhook] Invalid JSON body — still returning OK for U7BUY:",
+        err.message,
+        req.rawBody?.slice(0, 300) || ""
+      );
+      recordWebhookPost(req, {});
+      recordDiscordResult(null, "invalid_json_body");
+      return okResponse(res);
+    }
+  }
+  next(err);
 });
 
 app.listen(PORT, HOST, () => {
