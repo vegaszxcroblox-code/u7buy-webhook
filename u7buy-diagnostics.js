@@ -35,15 +35,24 @@ function saveDiagnostics() {
   }
 }
 
-function recordWebhookPost(req, body) {
+function recordWebhookPost(req, body, extracted = {}) {
   webhookDiagnostics.postCount += 1;
   webhookDiagnostics.lastPostAt = new Date().toISOString();
   webhookDiagnostics.lastPostEvent =
-    body?.event ?? body?.type ?? body?.eventType ?? null;
+    extracted.event ??
+    body?.event ??
+    body?.type ??
+    body?.eventType ??
+    body?.data?.event ??
+    body?.data?.type ??
+    null;
   webhookDiagnostics.lastPostOrderId =
+    extracted.orderId ??
     req?.preservedOrderId ??
     body?.data?.orderId ??
     body?.data?.order_id ??
+    body?.data?.orderNo ??
+    body?.data?.order_no ??
     body?.orderId ??
     body?.order_id ??
     null;

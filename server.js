@@ -22,6 +22,12 @@ const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || "";
 
+if (!DISCORD_WEBHOOK) {
+  console.warn(
+    "[startup] DISCORD_WEBHOOK is not set — all notifications will be silently dropped."
+  );
+}
+
 function sanitizeMentionUserId(raw) {
   if (raw == null || raw === "") {
     return "";
@@ -89,6 +95,17 @@ function logWebhook(method, payload) {
   );
 }
 
+function extractEvent(data) {
+  return (
+    data?.event ??
+    data?.type ??
+    data?.eventType ??
+    data?.data?.event ??
+    data?.data?.type ??
+    null
+  );
+}
+
 function extractOrderId(data, req) {
   if (req?.preservedOrderId) {
     return req.preservedOrderId;
@@ -96,17 +113,15 @@ function extractOrderId(data, req) {
 
   const block = data?.data ?? data;
   const parsed =
-    block?.orderId ?? block?.order_id ?? data?.orderId ?? data?.order_id;
+    block?.orderId ??
+    block?.order_id ??
+    block?.orderNo ??
+    block?.order_no ??
+    data?.orderId ??
+    data?.order_id ??
+    null;
 
-  if (parsed == null) {
-    return null;
-  }
-
-  return String(parsed);
-}
-
-function extractEvent(data) {
-  return data?.event ?? data?.type ?? data?.eventType;
+  return parsed == null ? null : String(parsed);
 }
 
 function normalizeWebhookBody(body, raw = "") {
@@ -121,13 +136,9 @@ function normalizeWebhookBody(body, raw = "") {
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    if (raw) {
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        parsed = {};
-      }
-    } else {
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
       parsed = {};
     }
   }
@@ -136,8 +147,8 @@ function normalizeWebhookBody(body, raw = "") {
     if (typeof parsed[key] === "string") {
       try {
         const inner = JSON.parse(parsed[key]);
-        if (inner && typeof inner === "object") {
-          parsed = inner;
+        if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+          parsed = { ...parsed, ...inner };
           break;
         }
       } catch {
@@ -146,7 +157,7 @@ function normalizeWebhookBody(body, raw = "") {
     }
   }
 
-  if (parsed.data && typeof parsed.data === "string") {
+  if (typeof parsed.data === "string") {
     try {
       parsed = { ...parsed, data: JSON.parse(parsed.data) };
     } catch {
@@ -220,10 +231,13 @@ const webhookHandler = {
   post: (req, res) => {
     const body = normalizeWebhookBody(req.body, req.rawBody || "");
     logWebhook("POST", body);
-    recordWebhookPost(req, body);
+    recordWebhookPost(req, body, {
+      event: extractEvent(body),
+      orderId: extractOrderId(body, req),
+    });
 
     if (req.preservedOrderId) {
-      const parsedId = extractOrderId(body);
+      const parsedId = extractOrderId(body, null);
       if (parsedId && parsedId !== req.preservedOrderId) {
         console.warn(
           `[webhook] orderId precision corrected: parsed=${parsedId} → preserved=${req.preservedOrderId}`
